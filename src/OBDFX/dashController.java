@@ -1,16 +1,22 @@
 package OBDFX;
 
-import com.jfoenix.controls.JFXRippler;
+import com.jfoenix.controls.*;
+import com.jfoenix.controls.events.JFXDialogEvent;
 import javafx.application.Platform;
 import javafx.collections.ObservableList;
 import javafx.concurrent.Task;
+import javafx.event.EventHandler;
 import javafx.fxml.FXML;
 import javafx.fxml.Initializable;
 import javafx.geometry.Insets;
 import javafx.scene.CacheHint;
 import javafx.scene.Node;
+import javafx.scene.control.FocusModel;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListView;
+import javafx.scene.input.MouseEvent;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
 import javafx.scene.paint.Paint;
 import javafx.scene.text.Font;
@@ -27,19 +33,112 @@ import java.util.ResourceBundle;
 public class dashController implements Initializable {
     @FXML
     public VBox bluetoothDevicesVBox;
+    @FXML
+    public StackPane alertStackPane;
+    @FXML
+    public StackPane progressStackPane;
 
     ArrayList<String> bDevicesMAC = new ArrayList<>();
     HashMap<String,String> bDevicesName = new HashMap<>();
+    private final Paint WHITE_PAINT = Paint.valueOf("#ffffff");
+
+    Process proc;
+    BufferedReader stdInput;
+    BufferedWriter stdOutput;
+    boolean isStop = false;
+    boolean isBluetoothON = false;
+    boolean goAheadBind = false;
+
+    String macAddressToBeConnected = "";
 
     @Override
     public void initialize(URL location, ResourceBundle resources) {
         startBluetooth();
     }
 
-    Process proc;
-    BufferedWriter stdOutput;
-    boolean isStop = false;
+    public void connectToOB2Device(String macAddress)
+    {
+        new Thread(new Task<Void>() {
+            @Override
+            protected Void call(){
+                try
+                {
+                    if(isBluetoothON)
+                    {
+                        Platform.runLater(()->{
+                            bluetoothDevicesVBox.setDisable(true);
+                            showProgress("Connecting to "+macAddress+" ...");
+                        });
 
+                        writeLineToStream("pair "+macAddress);
+                        goAheadBind = true;
+                        macAddressToBeConnected = macAddress;
+                        writeLineToStream("trust "+macAddress);
+                        writeLineToStream("scan off");
+                        writeLineToStream("exit");
+
+                        Platform.runLater(()->{
+                            bluetoothDevicesVBox.setDisable(false);
+                            hideProgress();
+                        });
+                    }
+                    else
+                    {
+                        showErrorAlert("Uh Oh!","Bluetooth isnt ON!");
+                    }
+                }
+                catch (Exception e)
+                {
+                    e.printStackTrace();
+                    showErrorAlert("Error!","Couldnt connect to "+macAddress+" successfully. Please check Stacktrace");
+                }
+                return null;
+            }
+        }).start();
+    }
+
+    void writeLineToStream(String line) throws Exception
+    {
+        stdOutput.write(line+"\n");
+        stdOutput.flush();
+        Thread.sleep(500);
+    }
+
+    public void showProgress(String text)
+    {
+        JFXDialogLayout l = new JFXDialogLayout();
+        l.getStyleClass().add("dialog_style");
+        Label textLabel = new Label(text);
+        textLabel.setFont(Font.font("Roboto Regular",15));
+        textLabel.setTextFill(WHITE_PAINT);
+        textLabel.setWrapText(true);
+
+        //TODO : Add Transparent Indeterminate Progress loading gif
+        JFXRippler x = new JFXRippler();
+        x.setCache(true);
+        HBox content = new HBox(textLabel,x);
+        l.setBody(content);
+
+        progressDialog = new JFXDialog(progressStackPane,l, JFXDialog.DialogTransition.CENTER);
+        progressDialog.setOverlayClose(false);
+        progressDialog.getStyleClass().add("dialog_box");
+
+        progressStackPane.toFront();
+        progressDialog.show();
+    }
+
+    JFXDialog progressDialog;
+
+    public void hideProgress()
+    {
+        progressDialog.close();
+        progressDialog.setOnDialogClosed(new EventHandler<JFXDialogEvent>() {
+            @Override
+            public void handle(JFXDialogEvent event) {
+                progressStackPane.toBack();
+            }
+        });
+    }
 
     void log(String log)
     {
@@ -63,7 +162,7 @@ public class dashController implements Initializable {
                     String[] commands = {"bluetoothctl"};
                     proc = rt.exec(commands);
 
-                    BufferedReader stdInput = new BufferedReader(new
+                    stdInput = new BufferedReader(new
                             InputStreamReader(proc.getInputStream()));
 
                     stdOutput = new BufferedWriter(new
@@ -72,6 +171,7 @@ public class dashController implements Initializable {
                     BufferedReader stdError = new BufferedReader(new
                             InputStreamReader(proc.getErrorStream()));
 
+                    isBluetoothON = true;
                     System.out.println("Here is the standard output of the command:\n");
                     String s = "";
                     while ((s = stdInput.readLine()) != null) {
@@ -115,12 +215,40 @@ public class dashController implements Initializable {
                             System.out.println("\n");
                         }
                     }
+
+                    stdOutput.close();
+                    stdInput.close();
+
+                    if(goAheadBind)
+                    {
+                        Runtime rt2 = Runtime.getRuntime();
+                        String[] commands2 = {"sudo rfcomm bind rfcomm0 "+macAddressToBeConnected};
+                        proc = rt2.exec(commands2);
+
+                        Thread.sleep(1000);
+                        Runtime rt3 = Runtime.getRuntime();
+                        String[] commands3 = {"screen /dev/rfcomm0"};
+                        proc = rt3.exec(commands3);
+
+                        stdInput = new BufferedReader(new
+                                InputStreamReader(proc.getInputStream()));
+
+                        stdOutput = new BufferedWriter(new
+                                OutputStreamWriter(proc.getOutputStream()));
+
+                        while ((s = stdInput.readLine()) != null) {
+                            
+                        }
+                    }
                 }
                 catch (Exception e)
                 {
                     e.printStackTrace();
+                    showErrorAlert("Uh Oh!","Unable to Start Bluetooth. Check StackTrace!");
+                    goAheadBind = false;
                 }
                 System.out.println("END!");
+                isBluetoothON = false;
                 Platform.runLater(()->{
                     bluetoothDevicesVBox.getChildren().clear();
                 });
@@ -155,8 +283,8 @@ public class dashController implements Initializable {
             Thread.sleep(500);
             for(Node eachNode : bluetoothDevicesVBox.getChildren())
             {
-                JFXRippler p = (JFXRippler) eachNode;
-                HBox eachPane = (HBox) p.getChildren().get(0);
+                JFXRippler r = (JFXRippler) eachNode;
+                HBox eachPane = (HBox) r.getChildren().get(0);
                 if(eachPane.getId().equals(bDevicesMAC.get(j)))
                 {
                     if(bDevicesName.get(bDevicesMAC.get(j)) != null)
@@ -189,13 +317,71 @@ public class dashController implements Initializable {
                 newHbox.setId(bDevicesMAC.get(j));
                 newHbox.setPadding(new Insets(15,15,15,15));
                 newHbox.setSpacing(25);
-                JFXRippler rippler = new JFXRippler(newHbox);
-                rippler.setCache(true);
-                rippler.setCacheHint(CacheHint.SPEED);
+                JFXRippler r = new JFXRippler(newHbox);
                 Platform.runLater(()-> {
-                    bluetoothDevicesVBox.getChildren().add(rippler);
+                    bluetoothDevicesVBox.getChildren().add(r);
+                });
+
+                r.setOnMouseClicked(event -> {
+                    HBox inside = (HBox) r.getChildren().get(0);
+                    connectToOB2Device(inside.getId());
+                });
+
+                r.setOnTouchReleased(event -> {
+                    HBox inside = (HBox) r.getChildren().get(0);
+                    connectToOB2Device(inside.getId());
                 });
             }
         }
+    }
+
+    public void showErrorAlert(String heading, String content)
+    {
+        JFXDialogLayout l = new JFXDialogLayout();
+        l.getStyleClass().add("dialog_style");
+        Label headingLabel = new Label(heading);
+        headingLabel.setTextFill(WHITE_PAINT);
+        headingLabel.setFont(Font.font("Roboto Regular",25));
+        l.setHeading(headingLabel);
+        Label contentLabel = new Label(content);
+        contentLabel.setFont(Font.font("Roboto Regular",15));
+        contentLabel.setTextFill(WHITE_PAINT);
+        contentLabel.setWrapText(true);
+        l.setBody(contentLabel);
+        JFXButton okButton = new JFXButton("OK");
+        okButton.setTextFill(WHITE_PAINT);
+        l.setActions(okButton);
+
+        Platform.runLater(new Runnable() {
+            @Override
+            public void run() {
+                alertStackPane.getChildren().clear();
+            }
+        });
+        JFXDialog alertDialog = new JFXDialog(alertStackPane,l, JFXDialog.DialogTransition.CENTER);
+        alertDialog.setOverlayClose(false);
+        alertDialog.getStyleClass().add("dialog_box");
+        okButton.setOnMouseClicked(new EventHandler<MouseEvent>() {
+            @Override
+            public void handle(MouseEvent event) {
+                alertDialog.close();
+                alertDialog.setOnDialogClosed(new EventHandler<JFXDialogEvent>() {
+                    @Override
+                    public void handle(JFXDialogEvent event) {
+                        alertStackPane.toBack();
+                    }
+                });
+            }
+        });
+
+
+        Platform.runLater(new Runnable() {
+            @Override
+            public void run() {
+                alertStackPane.toFront();
+                alertDialog.show();
+            }
+        });
+
     }
 }
